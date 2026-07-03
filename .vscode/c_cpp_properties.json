@@ -1,0 +1,12 @@
+{
+    "configurations": [
+        {
+            "name": "linux-kernel-module",
+            "compileCommands": "${workspaceFolder}/compile_commands.json",
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

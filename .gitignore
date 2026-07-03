@@ -1,0 +1,18 @@
+# Kernel module build artifacts
+*.o
+*.o.cmd
+*.ko
+*.ko.cmd
+*.mod
+*.mod.c
+*.mod.cmd
+*.mod.o
+*.mod.o.cmd
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
+.cache.mk
+
+# Generated, machine/kernel-version-specific (regenerate with the command in README)
+compile_commands.json
