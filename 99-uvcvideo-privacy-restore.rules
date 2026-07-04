@@ -1,0 +1,8 @@
+# Restore privacy_stub state (see uvc-privacy-restore.sh) whenever the
+# camera's video-capture node appears - covers normal boot as well as any
+# later USB re-enumeration (unplug/replug, suspend/resume).
+#
+# Source lives in the uvcvideo-privacy repo; installed copy belongs at
+# /etc/udev/rules.d/99-uvcvideo-privacy-restore.rules, and the script it
+# runs at /usr/local/sbin/uvc-privacy-restore.sh (see README.md).
+SUBSYSTEM=="video4linux", KERNEL=="video0", ACTION=="add", RUN+="/usr/local/sbin/uvc-privacy-restore.sh"

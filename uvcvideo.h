@@ -78,7 +78,7 @@ void uvc_privacy_stub_unload_fw(struct uvc_device *dev);
  * Driver specific constants.
  */
 
-#define DRIVER_VERSION		"1.1.1"
+#define DRIVER_VERSION		"1.1.1-privacy1"
 
 /* Number of isochronous URBs. */
 #define UVC_URBS		5

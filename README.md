@@ -66,6 +66,71 @@ make -C /lib/modules/$(uname -r)/build M=$(pwd) compile_commands.json
 
 ## Install
 
+### Option A: DKMS (recommended — survives reboots and kernel updates)
+
+This is the normal, permanent install: DKMS builds against your running
+kernel now, and automatically rebuilds against any future kernel package
+upgrade via its APT hook, so the module keeps working without manual
+intervention.
+
+Before installing, **back up the stock module** you're about to shadow —
+cheap insurance, not because removal is expected to fail:
+
+```sh
+sudo mkdir -p /var/backups/uvcvideo-privacy
+sudo cp /lib/modules/$(uname -r)/kernel/drivers/media/usb/uvc/uvcvideo.ko.zst \
+    /var/backups/uvcvideo-privacy/uvcvideo.ko.zst.stock-$(uname -r)
+```
+
+Then:
+
+```sh
+sudo ln -s "$(pwd)" /usr/src/uvcvideo-privacy-1.1.1-privacy1
+sudo dkms add -m uvcvideo-privacy -v 1.1.1-privacy1
+sudo dkms build -m uvcvideo-privacy -v 1.1.1-privacy1
+sudo dkms install -m uvcvideo-privacy -v 1.1.1-privacy1
+```
+
+This also installs the firmware assets automatically (via `dkms.conf`'s
+`POST_INSTALL` hook, `dkms-postinstall.sh`) — no separate firmware-copy
+step needed with this path.
+
+`dkms install` places the built module at
+`/lib/modules/$(uname -r)/updates/dkms/uvcvideo.ko`, which the standard
+Debian/Ubuntu module search order checks *before* the in-tree
+`kernel/` directory — so `modprobe uvcvideo` and normal USB hotplug both
+resolve to this build instead of stock, with the *same* module name
+(deliberately — see `docs/DESIGN.md` for why this was chosen over shipping
+under a different module name). Verify precedence without touching the
+currently-loaded module:
+
+```sh
+modinfo uvcvideo | head -6   # filename: should show .../updates/dkms/...
+```
+
+Swap the running module for the DKMS-installed one (same pipewire-stopping
+caveat as below applies):
+
+```sh
+sudo rmmod uvcvideo
+sudo modprobe uvcvideo
+```
+
+**Rollback**, if ever needed — this fully reverts to stock, instantly:
+
+```sh
+sudo dkms remove uvcvideo-privacy/1.1.1-privacy1 --all
+sudo depmod -a
+sudo modprobe uvcvideo
+```
+
+Editing the driver afterwards means bumping `PACKAGE_VERSION` in
+`dkms.conf`, `dkms remove`-ing the old version, then `add`/`build`/`install`
+again with the new one — DKMS tracks source by version, not by watching
+the working tree live.
+
+### Option B: manual, session-scoped (for quick iteration while developing)
+
 1. Install the stub images as firmware assets:
 
    ```sh
@@ -86,9 +151,9 @@ make -C /lib/modules/$(uname -r)/build M=$(pwd) compile_commands.json
        pipewire.service pipewire-pulse.service wireplumber.service
    ```
 
-   This is a manual, per-session load — the module is **not** installed to
-   load automatically at boot (no DKMS/`modules-load.d` setup). A reboot
-   reverts to the stock driver until you `insmod` again.
+   This load does **not** survive a reboot or a kernel update — use Option
+   A for that. This path is only for quickly testing a change without
+   going through a DKMS version bump each time.
 
 ## Usage
 
@@ -143,13 +208,56 @@ and generate an additional pair for it — no code changes needed, the
 loader builds the filename dynamically from whatever format/resolution is
 currently negotiated.
 
+## Reboot / login persistence
+
+The activation flag itself is a fresh `atomic_t` on every module load — it
+has no memory of what it was before shutdown, so without anything else, a
+reboot would always come back up with the real feed live regardless of
+what state you left it in. Two independent mechanisms close that gap:
+
+- **`99-uvcvideo-privacy-restore.rules`** (installed to
+  `/etc/udev/rules.d/`) + **`uvc-privacy-restore.sh`** (installed to
+  `/usr/local/sbin/`) — fires whenever `/dev/video0` appears (boot, or any
+  later USB re-enumeration: unplug/replug, suspend/resume), reads
+  `/etc/asus-fn-buttons/state/camera`, and re-applies `privacy_stub` if it
+  says `1`.
+- A companion systemd `--user` service in the separate `ASUS-Fn-Buttons`
+  project (a different local project — the hotkey/LED-indicator scripts
+  for this laptop's ASUS-specific hardware buttons, not part of this
+  repo) restores both the camera and mic-mute LEDs at every login, and
+  redundantly re-applies `privacy_stub` and mic-mute as a safety net —
+  needed because `/sys` LED brightness values have no persistence of
+  their own (confirmed empirically; this is true of everything under
+  `/sys`, not a quirk of this specific LED), and because the udev rule
+  above only fires when the camera device itself (re-)appears, not on
+  every login within the same boot session.
+
+Both mechanisms read from the same state file
+(`/etc/asus-fn-buttons/state/camera`), written by that project's
+`asus-camera.sh` on every hotkey toggle — this repo only owns applying
+that state to the `privacy_stub` control, not capturing it in the first
+place. See `docs/DESIGN.md` for the full design (including why a state
+file rather than reading the LED value back, and why the two triggers are
+necessarily different: a kernel uevent vs. a PipeWire/session-level
+concern for the mic side).
+
+Install (once you've built/installed the driver itself):
+
+```sh
+sudo cp uvc-privacy-restore.sh /usr/local/sbin/uvc-privacy-restore.sh
+sudo chmod 755 /usr/local/sbin/uvc-privacy-restore.sh
+sudo chown root:root /usr/local/sbin/uvc-privacy-restore.sh
+sudo cp 99-uvcvideo-privacy-restore.rules /etc/udev/rules.d/99-uvcvideo-privacy-restore.rules
+sudo udevadm control --reload-rules
+sudo mkdir -p /etc/asus-fn-buttons/state
+```
+
+This is manually installed for now, not yet part of the DKMS package —
+see the note in `docs/DESIGN.md` about deferring a proper combined
+installer until after more testing.
+
 ## Known issues / limitations
 
-- **No reboot persistence.** The activation flag is reset to off on every
-  module load (fresh `atomic_t`), and the module itself isn't installed to
-  auto-load at boot. Restoring privacy state after a reboot needs an
-  external mechanism (e.g. a udev rule + state file) — not implemented
-  yet.
 - **The activation flag is global, not per-device.** If you have more than
   one camera using this patched driver simultaneously, toggling privacy
   affects all of them together — there's a single module-wide `atomic_t`,
@@ -185,6 +293,15 @@ currently negotiated.
 
 See [`docs/TESTING.md`](docs/TESTING.md) for the full manual test matrix
 this patch has been run through.
+
+## Author
+
+The privacy-stub patch (everything described in this README and
+`docs/DESIGN.md`) is by Konstantin Bantov <k.doguzov@gmail.com>. The
+`uvcvideo` driver this is forked from is by Laurent Pinchart
+<laurent.pinchart@ideasonboard.com> and the Linux media subsystem
+contributors — both are credited as separate `MODULE_AUTHOR()` entries in
+the built module (`modinfo uvcvideo`), original author first.
 
 ## License
 

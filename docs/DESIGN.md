@@ -202,3 +202,106 @@ ping-pong. Confirmed via temporary `dev_info()` logging showing distinct
 while an app is actively pulling frames causes real, visible stalls. This
 is expected behavior given the load-on-activate design, not a driver bug
 — the fix belongs in the hotkey script (add a debounce guard), not here.
+
+## DKMS packaging: same module name as stock, on purpose
+
+Once the driver was working reliably, the goal shifted from "personal
+session-scoped patch" to "permanent replacement, surviving kernel updates,
+loading like any normal driver" — DKMS is the standard mechanism for
+exactly that (same purpose it serves for NVIDIA's driver, VirtualBox's
+kernel modules, etc.).
+
+The one real decision here: whether the DKMS-built module should keep the
+stock module's name (`uvcvideo`) or ship under something distinguishable
+in `lsmod` (e.g. `uvcvideo_privacy`). Two considered options:
+
+- **Same name (chosen)**: DKMS installs into
+  `/lib/modules/$kernelver/updates/dkms/`, which the standard
+  Debian/Ubuntu module search order checks *before* the in-tree `kernel/`
+  directory. Since only one module can ever answer to a given name at a
+  time, `modprobe uvcvideo` and normal USB hotplug both resolve reliably
+  to this build with zero ambiguity or race risk — this is precisely the
+  mechanism `updates/` search-path precedence exists for. The tradeoff:
+  `lsmod`/`modinfo uvcvideo` alone don't visually distinguish this build
+  from stock — solved cheaply instead via a distinct `MODULE_VERSION()`
+  string (`1.1.1-privacy1` vs. stock's `1.1.1`) and an updated
+  `MODULE_DESCRIPTION()`.
+- **Different name**: instantly distinguishable in `lsmod`, but the kernel
+  module name shown by `lsmod`/`modinfo`/`rmmod` is derived directly from
+  the `.ko` filename — there's no way to change one without the other for
+  a regular kernel module. Two independently-named modules both
+  registering a `usb_driver` for the same USB device ID via
+  `MODULE_DEVICE_TABLE` creates a genuine race for which one actually wins
+  the hotplug match — not something to leave to chance for a
+  privacy-relevant feature. Making it reliable would need an explicit
+  `/etc/modprobe.d/` blacklist of stock `uvcvideo` (safe specifically
+  *because* this laptop has only the one built-in UVC camera — a
+  system-wide blacklist would also block any other UVC webcam from using
+  the stock driver), adding a moving part with no real benefit over the
+  version-string approach.
+
+`MODULE_AUTHOR()` note: kernel modules can carry multiple author tags;
+the *display* order in `modinfo` output turns out to be the reverse of
+declaration order in source (confirmed empirically by swapping the two
+`MODULE_AUTHOR()` lines and rebuilding) — worth knowing before assuming
+source order is display order.
+
+## Reboot / login persistence architecture
+
+The activation flag (`uvc_privacy_stub_active`) is a fresh `atomic_t` on
+every module load — there's no way for the kernel to remember what it was
+set to before shutdown. Two false starts before landing on the final
+design, both worth recording since they seemed reasonable initially:
+
+- **Read the LED's own sysfs value back as the persistence source**
+  (the ASUS hotkey scripts already toggle a physical LED alongside
+  `privacy_stub`, so reusing it seemed appealing — no separate state file
+  needed). Ruled out empirically: sysfs has *no* persistence of any kind
+  across a reboot, for anything, ever — it's purely an in-memory
+  representation of live kernel/driver state, rebuilt from scratch on
+  every boot. Confirmed by setting the LED to `1`, rebooting, and finding
+  it reset to `0`. This isn't a driver quirk, it's true of `/sys/`
+  universally.
+- **Snapshot state via a `systemd-system-shutdown` hook, restore at
+  boot** — the standard pattern for "persist something not otherwise
+  persisted," but unnecessary complexity here once realized the hotkey
+  script already computes the new state on *every* toggle, not just at
+  shutdown — so it can simply write that state to a file each time,
+  eliminating the need to snapshot anything at shutdown at all.
+
+**Final design**: `asus-camera.sh`/`asus-mic.sh` (in the separate
+`ASUS-Fn-Buttons` project) write `STATE_ID` to
+`/etc/asus-fn-buttons/state/{camera,mic}` on every toggle, in addition to
+the LED and the driver/PipeWire call they already made. Two independent
+consumers read these files, each triggered by *its own* domain's
+"device/session became ready" signal rather than by each other, so
+there's no ordering dependency or race between them:
+
+- **Camera** (this repo): a udev rule
+  (`99-uvcvideo-privacy-restore.rules`) fires on
+  `SUBSYSTEM=="video4linux", KERNEL=="video0", ACTION=="add"` — the point
+  at which `privacy_stub` first becomes settable, whether that's at boot
+  or a later USB re-enumeration. Verified without needing an actual
+  reboot, via `sudo udevadm trigger --action=add
+  /sys/class/video4linux/video0` with the state file and current
+  `privacy_stub` value deliberately set to disagree beforehand.
+- **Camera + mic LEDs, plus a redundant re-application of both driver
+  states** (`ASUS-Fn-Buttons`): a systemd `--user` service
+  (`asus-fn-buttons-restore.service`, `WantedBy=default.target`) fires at
+  every login. This is *not* redundant with the udev rule despite
+  overlapping on the camera side — sysfs LED values need restoring at
+  every boot regardless (nothing else does that), the mic side is a
+  PipeWire/WirePlumber session concern with no kernel uevent to hook at
+  all, and re-running the camera restore here too is a cheap safety net
+  against any mid-session drift between recorded and actual state.
+
+Both LED writes need root
+(`sudo tee /sys/devices/platform/asus-nb-wmi/leds/...`), including from
+the unattended systemd service (no TTY, no cached credential). This
+worked without needing any new sudoers configuration: the machine already
+had scoped `NOPASSWD` rules for exactly these two `tee` invocations in
+`/etc/sudoers` (predating this session's work, presumably added
+alongside the original hotkey scripts) — worth checking for
+before assuming either "it'll just work" or "we need to set up
+passwordless sudo," since a blanket passwordless grant would have been a
+real, avoidable security downgrade compared to what was already in place.

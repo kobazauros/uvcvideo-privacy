@@ -78,6 +78,44 @@ changes. All of it passed on the tested hardware/kernel combination (see
     these are two distinct findings from two different investigations,
     not the same thing).
 
+## E. DKMS packaging
+
+11. `dkms status` shows `uvcvideo-privacy/<version>, <kernelver>, x86_64:
+    installed (Original modules exist)` — the parenthetical confirms DKMS
+    itself is aware it's shadowing an in-tree module, matching the design.
+12. `modinfo uvcvideo` — without touching the currently-loaded module —
+    shows the DKMS-built `filename:` under `updates/dkms/` and the custom
+    `version:` string, confirming the module search path resolves to this
+    build.
+13. `sudo rmmod uvcvideo && sudo modprobe uvcvideo` (plain modprobe, no
+    explicit path) — reloads via the same path normal USB hotplug would
+    use; confirmed clean `dmesg`, `privacy_stub` present and functional.
+14. Full reboot: confirmed `modinfo uvcvideo` and a working `privacy_stub`
+    control immediately after login, with zero manual `insmod`/`modprobe`
+    steps — proves the `updates/` search-path precedence holds through a
+    real boot, not just a live `modprobe` swap.
+
+## F. Reboot / login persistence
+
+15. Missing-firmware-style negative-adjacent test, but for the restore
+    path: set `/etc/asus-fn-buttons/state/camera` to `1`, force
+    `privacy_stub` to `0`, then `sudo udevadm trigger --action=add
+    /sys/class/video4linux/video0` (simulates the boot-time device-add
+    event without an actual reboot/replug) — confirmed `privacy_stub`
+    flips back to `1`.
+16. `systemctl --user restart asus-fn-buttons-restore.service` (the
+    `ASUS-Fn-Buttons` project's login-time restore unit) — confirmed
+    `status=0/SUCCESS` and, checking the unit's log
+    (`systemctl --user status ... --no-pager`), both the camera and mic
+    LED `sudo tee` calls actually executed (visible as
+    `COMMAND=/usr/bin/tee /sys/devices/platform/asus-nb-wmi/leds/...` in
+    the log), with no password-prompt failures — confirms the existing
+    scoped sudoers rules cover this new consumer correctly.
+17. Confirmed the LED brightness value does *not* survive an actual
+    reboot on its own (`echo 1 | sudo tee <led-brightness-path>`, reboot,
+    re-check — came back `0`) — this is what the mechanisms in items 15–16
+    exist to work around, not something expected to "just work."
+
 ## Reproducing the module swap used throughout
 
 ```sh

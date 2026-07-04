@@ -28,7 +28,8 @@
 
 #define DRIVER_AUTHOR		"Laurent Pinchart " \
 				"<laurent.pinchart@ideasonboard.com>"
-#define DRIVER_DESC		"USB Video Class driver"
+#define DRIVER_PRIVACY_AUTHOR	"Konstantin Bantov <k.doguzov@gmail.com>"
+#define DRIVER_DESC		"USB Video Class driver (with privacy-stub patch)"
 
 unsigned int uvc_clock_param = CLOCK_MONOTONIC;
 unsigned int uvc_hw_timestamps_param;
@@ -3473,6 +3474,7 @@ static void __exit uvc_cleanup(void)
 module_init(uvc_init);
 module_exit(uvc_cleanup);
 
+MODULE_AUTHOR(DRIVER_PRIVACY_AUTHOR);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
